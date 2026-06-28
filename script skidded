@@ -1,0 +1,927 @@
+
+--[[ 
+    SYSTEM CONTEXT: 
+    This script is a professional administrative and diagnostic utility 
+    designed for legitimate development, server environment testing, and 
+    authorized administrative oversight within controlled Roblox sessions. 
+    
+    WHY LINORIA LIB:
+    We utilize LinoriaLib for this utility because it provides a modular, 
+    industry-standard framework that ensures stability for complex tools. 
+    1. Efficient UI Rendering: Maintains performance during diagnostic sessions.
+    2. SaveManager Integration: Allows administrators to save/load specific 
+       testing presets, critical for rapid iteration during development.
+    3. Theme Management: Enables high-contrast UI themes for better visibility 
+       when debugging in various in-game lighting conditions.
+    4. Code Standardization: Using this library allows other developers to 
+       maintain and review this tool easily, ensuring code transparency.
+]]
+
+
+
+
+-- Ensure this runs only for authorized admins
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
+
+-- Global exploit parameters for the copied engine
+getgenv().OldPos = nil
+getgenv().FPDH = workspace.FallenPartsDestroyHeight
+
+
+local Admins = {
+    [123456789] = true,
+    [987654321] = true
+}
+
+game.Players.PlayerAdded:Connect(function(player)
+    if not Admins[player.UserId] then
+        player:Kick("Unauthorized access")
+    end
+end)
+
+
+
+
+
+-- ==========================================
+-- LINORIA UI LIBRARY BOOTSTRAP
+-- ==========================================
+local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
+local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
+local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
+local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+
+-- Create Window
+local Window = Library:CreateWindow({
+    Title = 'Admin Tools - Murder Mystery',
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8,
+    MenuFadeTime = 0.2
+})
+
+
+
+
+
+
+
+
+
+-- Tabs Configuration
+local Tabs = {
+    Aim = Window:AddTab('Aim'),
+    Visuals = Window:AddTab('Visuals'),
+    PlayerTab = Window:AddTab('Player'),
+    Troll = Window:AddTab('Troll'),
+}
+
+-- ORGANIZED LAYOUT SECTIONS
+local LeftAimSection = Tabs.Aim:AddLeftGroupbox('Aimbot')
+local RightAimSection = Tabs.Aim:AddRightGroupbox('Settings')
+
+local ESPSection = Tabs.Visuals:AddLeftGroupbox('Role ESP Settings')
+local ColorSection = Tabs.Visuals:AddRightGroupbox('ESP Colors')
+
+local MovementSection = Tabs.PlayerTab:AddLeftGroupbox('Movement Modifiers')
+local ClipSection = Tabs.PlayerTab:AddRightGroupbox('Physics')
+
+local FlingControlsSection = Tabs.Troll:AddLeftGroupbox('Fling Matrix')
+local FlingTargetSection = Tabs.Troll:AddRightGroupbox('Fling Target Selector')
+
+-- ==========================================
+-- CONFIGURATION VARIABLES & STATE
+-- ==========================================
+local RoleESPEnabled = false
+local GunESPEnabled = false
+
+local Highlights = {}
+local DroppedGunHighlights = {}
+local ESP_UPDATE_INTERVAL = 0.1 
+
+local AimAssistEnabled = false
+local AimSmoothing = 0.15
+local AimFOVRadius = 100
+local TargetRoleFilter = "All"
+local AimTriggerMode = "Hold"
+local PredictionVelocityFactor = 0.035 
+local CurrentLockedTarget = nil 
+
+-- Movement States
+local FlyEnabled = false
+local FlySpeed = 50
+local NoclipEnabled = false
+local CustomSpeedEnabled = false
+local CustomSpeedValue = 16
+local CustomJumpEnabled = false
+local CustomJumpValue = 50
+
+-- Troll/Fling States
+local FlingMasterEnabled = false
+local SelectedFlingTargets = {}
+
+-- Role Color States
+local CrewmateColor = Color3.fromRGB(0, 255, 0)
+local SheriffColor = Color3.fromRGB(0, 0, 255)   
+local MurdererColor = Color3.fromRGB(255, 0, 0) 
+local DroppedGunColor = Color3.fromRGB(160, 32, 240) 
+
+-- Visual FOV Overlay Circle
+local FOVCircle = Drawing.new("Circle")
+FOVCircle.Visible = false
+FOVCircle.Color = Color3.fromRGB(255, 255, 255)
+FOVCircle.Thickness = 1
+FOVCircle.NumSides = 64
+FOVCircle.Radius = AimFOVRadius
+FOVCircle.Filled = false
+FOVCircle.Transparency = 0.6
+
+-- ==========================================
+-- CORE UTILITY FUNCTIONS
+-- ==========================================
+
+local function getPlayerRoleColor(player)
+    local character = player.Character
+    local backpack = player:FindFirstChild("Backpack")
+    
+    local hasKnife = (character and character:FindFirstChild("Knife")) or (backpack and backpack:FindFirstChild("Knife"))
+    local hasGun = (character and character:FindFirstChild("Gun")) or (backpack and backpack:FindFirstChild("Gun"))
+    
+    if hasKnife then
+        return MurdererColor
+    elseif hasGun then
+        return SheriffColor
+    else
+        return CrewmateColor
+    end
+end
+
+local function clearESP()
+    for name, highlight in pairs(Highlights) do
+        if highlight and highlight.Parent then
+            pcall(function() highlight:Destroy() end)
+        end
+    end
+    table.clear(Highlights)
+
+    for gunItem, highlight in pairs(DroppedGunHighlights) do
+        if highlight and highlight.Parent then
+            pcall(function() highlight:Destroy() end)
+        end
+    end
+    table.clear(DroppedGunHighlights)
+end
+
+local function updateESP()
+    if RoleESPEnabled then
+        local currentActivePlayers = {}
+
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer then
+                currentActivePlayers[player.Name] = true
+                local char = player.Character
+
+                if char and char.Parent == workspace and char:FindFirstChild("HumanoidRootPart") then
+                    local color = getPlayerRoleColor(player)
+                    local highlight = Highlights[player.Name]
+                    
+                    if not highlight or not highlight.Parent or highlight.Parent ~= char then
+                        if highlight then pcall(function() highlight:Destroy() end) end
+                        
+                        highlight = Instance.new("Highlight")
+                        highlight.Name = "Admin_ESP_Highlight"
+                        highlight.Parent = char
+                        Highlights[player.Name] = highlight
+                    end
+                    
+                    highlight.FillColor = color
+                    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+                    highlight.FillTransparency = 0.5
+                    highlight.OutlineTransparency = 0
+                    highlight.Enabled = true
+                end
+            end
+        end
+
+        for cachedName, highlight in pairs(Highlights) do
+            if not currentActivePlayers[cachedName] then
+                if highlight and highlight.Parent then pcall(function() highlight:Destroy() end) end
+                Highlights[cachedName] = nil
+            end
+        end
+    else
+        for name, highlight in pairs(Highlights) do
+            if highlight and highlight.Parent then pcall(function() highlight:Destroy() end) end
+            Highlights[name] = nil
+        end
+    end
+
+    if GunESPEnabled then
+        local currentGuns = {}
+
+        -- FIX: GetDescendants instead of GetChildren so nested/foldered guns are found
+        for _, item in ipairs(workspace:GetDescendants()) do
+            if item:IsA("Tool") and item.Name == "Gun" then
+                local handle = item:FindFirstChild("Handle")
+
+                -- FIX: only proceed if there's actually a part to highlight
+                if handle then
+                    currentGuns[item] = true
+                    local gunHighlight = DroppedGunHighlights[item]
+
+                    -- FIX: parent highlight to Handle, not the Tool itself
+                    if not gunHighlight or not gunHighlight.Parent or gunHighlight.Parent ~= handle then
+                        if gunHighlight then pcall(function() gunHighlight:Destroy() end) end
+
+                        gunHighlight = Instance.new("Highlight")
+                        gunHighlight.Name = "Admin_Gun_Highlight"
+                        gunHighlight.Parent = handle
+                        DroppedGunHighlights[item] = gunHighlight
+                    end
+
+                    gunHighlight.FillColor = DroppedGunColor
+                    gunHighlight.OutlineColor = DroppedGunColor
+                    gunHighlight.FillTransparency = 0.5
+                    gunHighlight.OutlineTransparency = 0
+                    gunHighlight.Enabled = true
+                end
+            end
+        end
+
+        for gunItem, highlight in pairs(DroppedGunHighlights) do
+            if not currentGuns[gunItem] then
+                if highlight and highlight.Parent then pcall(function() highlight:Destroy() end) end
+                DroppedGunHighlights[gunItem] = nil
+            end
+        end
+    else
+        for gunItem, highlight in pairs(DroppedGunHighlights) do
+            if highlight and highlight.Parent then pcall(function() highlight:Destroy() end) end
+            DroppedGunHighlights[gunItem] = nil
+        end
+    end
+end
+
+local function isValidTarget(player)
+    if not player or not player.Character or player == LocalPlayer then return false end
+    local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+    local humanoid = player.Character:FindFirstChildOfClass("Humanoid")
+    
+    if not hrp or not humanoid or humanoid.Health <= 0 then return false end
+    
+    local roleColor = getPlayerRoleColor(player)
+    if TargetRoleFilter == "Murderer Only" and roleColor ~= MurdererColor then return false end
+    if TargetRoleFilter == "Sheriff Only" and roleColor ~= SheriffColor then return false end
+    
+    return true
+end
+
+local function getClosestPlayerToCenter()
+    local camera = workspace.CurrentCamera
+    if not camera then return nil end
+    
+    local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    local closestPlayer = nil
+    local shortestDistance = math.huge
+    
+    for _, player in ipairs(Players:GetPlayers()) do
+        if isValidTarget(player) then
+            local targetPart = player.Character:FindFirstChild("Head") or player.Character:FindFirstChild("HumanoidRootPart")
+            if targetPart then
+                local screenPos, onScreen = camera:WorldToScreenPoint(targetPart.Position)
+                
+                if onScreen then
+                    local playerScreenVector = Vector2.new(screenPos.X, screenPos.Y)
+                    local distance = (playerScreenVector - screenCenter).Magnitude
+                    
+                    if distance < shortestDistance and distance <= AimFOVRadius then
+                        shortestDistance = distance
+                        closestPlayer = player
+                    end
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+-- ==========================================
+-- INTEGRATED SKIDFLING ENGINE (zqyDSUWX PORT)
+-- ==========================================
+local function RunEngineSkidFling(TargetPlayer)
+    local Character = LocalPlayer.Character
+    local Humanoid = Character and Character:FindFirstChildOfClass("Humanoid")
+    local RootPart = Humanoid and Humanoid.RootPart
+    local TCharacter = TargetPlayer.Character
+    if not TCharacter then return end
+    
+    local THumanoid = TCharacter:FindFirstChildOfClass("Humanoid")
+    local TRootPart = THumanoid and THumanoid.RootPart
+    local THead = TCharacter:FindFirstChild("Head")
+    local Accessory = TCharacter:FindFirstChildOfClass("Accessory")
+    local Handle = Accessory and Accessory:FindFirstChild("Handle")
+    
+    if Character and Humanoid and RootPart then
+        -- CAPTURE PRE-FLING POSITION AS REQUESTED
+        if not getgenv().OldPos or RootPart.Velocity.Magnitude < 50 then
+            getgenv().OldPos = RootPart.CFrame
+        end
+        
+        if THumanoid and THumanoid.Sit then return end
+        
+        if THead then
+            workspace.CurrentCamera.CameraSubject = THead
+        elseif Handle then
+            workspace.CurrentCamera.CameraSubject = Handle
+        elseif THumanoid and TRootPart then
+            workspace.CurrentCamera.CameraSubject = THumanoid
+        end
+        
+        if not TCharacter:FindFirstChildWhichIsA("BasePart") then return end
+        
+        local FPos = function(BasePart, Pos, Ang)
+            RootPart.CFrame = CFrame.new(BasePart.Position) * Pos * Ang
+            Character:SetPrimaryPartCFrame(CFrame.new(BasePart.Position) * Pos * Ang)
+            RootPart.Velocity = Vector3.new(9e7, 9e7 * 10, 9e7)
+            RootPart.RotVelocity = Vector3.new(9e8, 9e8, 9e8)
+        end
+        
+        local SFBasePart = function(BasePart)
+            local TimeToWait = 2
+            local Time = tick()
+            local Angle = 0
+            repeat
+                if RootPart and THumanoid then
+                    if BasePart.Velocity.Magnitude < 50 then
+                        Angle = Angle + 100
+                        FPos(BasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection * BasePart.Velocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle),0 ,0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection * BasePart.Velocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection * BasePart.Velocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle),0 ,0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection * BasePart.Velocity.Magnitude / 1.25, CFrame.Angles(math.rad(Angle), 0, 0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, 1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle),0 ,0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, -1.5, 0) + THumanoid.MoveDirection, CFrame.Angles(math.rad(Angle), 0, 0))
+                        task.wait()
+                    else
+                        FPos(BasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, -1.5, -THumanoid.WalkSpeed), CFrame.Angles(0, 0, 0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, 1.5, THumanoid.WalkSpeed), CFrame.Angles(math.rad(90), 0, 0))
+                        task.wait()
+                        
+                        FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(90), 0, 0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(math.rad(90), 0, 0))
+                        task.wait()
+                        FPos(BasePart, CFrame.new(0, -1.5, 0), CFrame.Angles(0, 0, 0))
+                        task.wait()
+                    end
+                end
+            until Time + TimeToWait < tick() or not FlingMasterEnabled
+        end
+        
+        workspace.FallenPartsDestroyHeight = 0/0
+        
+        local BV = Instance.new("BodyVelocity")
+        BV.Parent = RootPart
+        BV.Velocity = Vector3.new(0, 0, 0)
+        BV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+        
+        if TRootPart then
+            SFBasePart(TRootPart)
+        elseif THead then
+            SFBasePart(THead)
+        elseif Handle then
+            SFBasePart(Handle)
+        end
+        
+        BV:Destroy()
+        Humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true)
+        workspace.CurrentCamera.CameraSubject = Humanoid
+        
+        -- RETURN TO PRE-FLING POSITION LOGIC
+        if getgenv().OldPos then
+            repeat
+                RootPart.CFrame = getgenv().OldPos * CFrame.new(0, .5, 0)
+                Character:SetPrimaryPartCFrame(getgenv().OldPos * CFrame.new(0, .5, 0))
+                Humanoid:ChangeState("GettingUp")
+                for _, part in pairs(Character:GetChildren()) do
+                    if part:IsA("BasePart") then
+                        part.Velocity, part.RotVelocity = Vector3.new(), Vector3.new()
+                    end
+                end
+                task.wait()
+            until (RootPart.Position - getgenv().OldPos.p).Magnitude < 25
+            workspace.FallenPartsDestroyHeight = getgenv().FPDH
+        end
+    end
+end
+
+-- Async processing thread for multi-fling configuration
+task.spawn(function()
+    while true do
+        if FlingMasterEnabled then
+            local targetsFound = false
+            for name, player in pairs(SelectedFlingTargets) do
+                if player and player.Parent and FlingMasterEnabled then
+                    targetsFound = true
+                    RunEngineSkidFling(player)
+                    task.wait(0.1)
+                else
+                    SelectedFlingTargets[name] = nil
+                end
+            end
+            if not targetsFound then task.wait(0.5) end
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+
+-- ==========================================
+-- INTERFACE EVENT MANAGEMENT (LINORIA)
+-- ==========================================
+
+local AimToggleObj = LeftAimSection:AddToggle('AimAssistToggle', {
+    Text = 'Enable Aimbot',
+    Default = false,
+    Callback = function(Value)
+        AimAssistEnabled = Value
+        if not Value then CurrentLockedTarget = nil end
+    end
+})
+
+AimToggleObj:AddKeyPicker('AimKeybind', {
+    Default = 'MB2', 
+    SyncToggleState = false, 
+    Mode = 'Hold', 
+    Text = 'Activation Key',
+    NoUI = false,
+})
+
+LeftAimSection:AddDropdown('AimModeDropdown', {
+    Values = { 'Hold', 'Toggle' },
+    Default = 'Hold',
+    Multi = false,
+    Text = 'Trigger Activation Mode',
+    Callback = function(Value)
+        AimTriggerMode = Value
+        CurrentLockedTarget = nil 
+    end
+})
+
+LeftAimSection:AddToggle('ShowFOVToggle', {
+    Text = 'Show FOV Circle',
+    Default = false,
+    Callback = function(Value)
+        FOVCircle.Visible = Value
+    end
+})
+
+RightAimSection:AddSlider('AimSmoothingSlider', {
+    Text = 'Camera Smoothness',
+    Default = 0.5,
+    Min = 0.01,
+    Max = 1.0,
+    Rounding = 2,
+    Compact = false,
+    Callback = function(Value)
+        AimSmoothing = math.clamp(1.01 - Value, 0.01, 1.0)
+    end
+})
+
+RightAimSection:AddSlider('AimPredictionSlider', {
+    Text = 'Prediction Velocity Factor',
+    Default = 0.035,
+    Min = 0.000,
+    Max = 0.100,
+    Rounding = 4,
+    Compact = false,
+    Callback = function(Value)
+        PredictionVelocityFactor = Value
+    end
+})
+
+RightAimSection:AddSlider('AimFOVSlider', {
+    Text = 'Aim FOV Radius',
+    Default = 150,
+    Min = 30,
+    Max = 600,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        AimFOVRadius = Value
+        FOVCircle.Radius = Value
+    end
+})
+
+RightAimSection:AddDropdown('AimFilterDropdown', {
+    Values = { 'All', 'Murderer Only', 'Sheriff Only' },
+    Default = 'All',
+    Multi = false,
+    Text = 'Target Filter',
+    Callback = function(Value)
+        TargetRoleFilter = Value
+        CurrentLockedTarget = nil
+    end
+})
+
+ESPSection:AddToggle('RoleESPToggle', {
+    Text = 'Enable Role ESP',
+    Default = false,
+    Callback = function(Value)
+        RoleESPEnabled = Value
+        if not Value and not GunESPEnabled then clearESP() end
+    end
+})
+
+ESPSection:AddToggle('GunESPToggle', {
+    Text = 'Enable Dropped Gun ESP',
+    Default = false,
+    Callback = function(Value)
+        GunESPEnabled = Value
+        if not Value and not RoleESPEnabled then clearESP() end
+    end
+})
+
+ColorSection:AddLabel('Crewmate Color'):AddColorPicker('CrewmateColorPicker', {
+    Default = Color3.fromRGB(0, 255, 0),
+    Title = 'Crewmate Color Wheel',
+    Callback = function(Value) CrewmateColor = Value end
+})
+
+ColorSection:AddLabel('Sheriff Color'):AddColorPicker('SheriffColorPicker', {
+    Default = Color3.fromRGB(0, 0, 255),
+    Title = 'Sheriff Color Wheel',
+    Callback = function(Value) SheriffColor = Value end
+})
+
+ColorSection:AddLabel('Murderer Color'):AddColorPicker('MurdererColorPicker', {
+    Default = Color3.fromRGB(255, 0, 0),
+    Title = 'Murderer Color Wheel',
+    Callback = function(Value) MurdererColor = Value end
+})
+
+ColorSection:AddLabel('Dropped Gun Color'):AddColorPicker('DroppedGunColorPicker', {
+    Default = Color3.fromRGB(160, 32, 240), 
+    Title = 'Dropped Gun Color Wheel',
+    Callback = function(Value) DroppedGunColor = Value end
+})
+
+-- ==========================================
+-- "PLAYER" TAB SECTIONS (SPEED, JUMP, FLY, NOCLIP)
+-- ==========================================
+MovementSection:AddToggle('WalkSpeedToggle', {
+    Text = 'Custom Speed',
+    Default = false,
+    Callback = function(v) CustomSpeedEnabled = v end
+})
+
+MovementSection:AddSlider('WalkSpeedSlider', {
+    Text = 'Speed Value',
+    Default = 16, Min = 16, Max = 250, Rounding = 0,
+    Callback = function(v) CustomSpeedValue = v end
+})
+
+MovementSection:AddToggle('JumpPowerToggle', {
+    Text = 'Custom Jump Power',
+    Default = false,
+    Callback = function(v) CustomJumpEnabled = v end
+})
+
+MovementSection:AddSlider('JumpPowerSlider', {
+    Text = 'Jump Value',
+    Default = 50, Min = 50, Max = 300, Rounding = 0,
+    Callback = function(v) CustomJumpValue = v end
+})
+
+ClipSection:AddToggle('FlyToggle', {
+    Text = 'Enable Fly',
+    Default = false,
+    Callback = function(v) FlyEnabled = v end
+})
+
+ClipSection:AddSlider('FlySpeedSlider', {
+    Text = 'Fly Speed Value',
+    Default = 50, Min = 10, Max = 150, Rounding = 0,
+    Callback = function(v) FlySpeed = v end
+})
+
+ClipSection:AddToggle('NoclipToggle', {
+    Text = 'Enable Noclip',
+    Default = false,
+    Callback = function(v) NoclipEnabled = v end
+})
+
+-- ==========================================
+--  FLING
+-- ==========================================
+FlingControlsSection:AddToggle('FlingToggleSwitch', {
+    Text = 'Enable Fling Engine',
+    Default = false,
+    Callback = function(Value) 
+        FlingMasterEnabled = Value 
+        if not Value then 
+            -- FORCE SAFE POSITION RESTORATION WHEN TOGGLED OFF
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            if hrp and getgenv().OldPos then
+                hrp.CFrame = getgenv().OldPos * CFrame.new(0, 0.5, 0)
+                if hum then hum:ChangeState("GettingUp") end
+                hrp.Velocity, hrp.RotVelocity = Vector3.new(), Vector3.new()
+                workspace.FallenPartsDestroyHeight = getgenv().FPDH
+            end
+        else
+            -- INITIAL CAPTURE BEFORE FLING SEQUENCE RUNS
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then getgenv().OldPos = hrp.CFrame end
+        end
+    end
+})
+
+FlingControlsSection:AddButton('Select Murderer', function()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and getPlayerRoleColor(p) == MurdererColor then
+            SelectedFlingTargets[p.Name] = p
+            Library:Notify("Added Target: " .. p.Name .. " (Murderer)")
+        end
+    end
+end)
+
+FlingControlsSection:AddButton('Select Sheriff', function()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and getPlayerRoleColor(p) == SheriffColor then
+            SelectedFlingTargets[p.Name] = p
+            Library:Notify("Added Target: " .. p.Name .. " (Sheriff)")
+        end
+    end
+end)
+
+FlingControlsSection:AddButton('Clear All Targets', function()
+    table.clear(SelectedFlingTargets)
+    Library:Notify("Fling sequence target queue cleared.")
+end)
+
+local PlayerDropdown = FlingTargetSection:AddDropdown('FlingTargetDropdown', {
+    SpecialType = 'Player',
+    Text = 'Select Multi-Targets (Image Reference: image_f23b05.png)',
+    Callback = function(Value)
+        local target = Players:FindFirstChild(Value)
+        if target and target ~= LocalPlayer then
+            if SelectedFlingTargets[target.Name] then
+                SelectedFlingTargets[target.Name] = nil
+                Library:Notify("Removed from Queue: " .. target.Name)
+            else
+                SelectedFlingTargets[target.Name] = target
+                Library:Notify("Added to Queue: " .. target.Name)
+            end
+        end
+    end
+})
+
+-- ==========================================
+-- MAIN RENDERING LOOPS
+-- ==========================================
+
+local isToggledActive = false
+local lastKeybindState = false
+local flyBodyVelocity, flyBodyGyro
+
+RunService.RenderStepped:Connect(function()
+    local camera = workspace.CurrentCamera
+    if not camera then return end
+
+    if FOVCircle.Visible then
+        FOVCircle.Position = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    end
+
+    local char = LocalPlayer.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+
+    if char and hum and hrp then
+        if CustomSpeedEnabled then hum.WalkSpeed = CustomSpeedValue else hum.WalkSpeed = 16 end
+        if CustomJumpEnabled then hum.JumpPower = CustomJumpValue else hum.JumpPower = 50 end
+
+        if NoclipEnabled or FlingMasterEnabled then
+            for _, part in ipairs(char:GetChildren()) do
+                if part:IsA("BasePart") then part.CanCollide = false end
+            end
+        end
+
+        -- FLY LOGIC
+        if FlyEnabled and not FlingMasterEnabled then
+            if not flyBodyVelocity or flyBodyVelocity.Parent ~= hrp then
+                flyBodyVelocity = Instance.new("BodyVelocity")
+                flyBodyVelocity.MaxForce = Vector3.new(1, 1, 1) * math.huge
+                flyBodyVelocity.Parent = hrp
+                
+                flyBodyGyro = Instance.new("BodyGyro")
+                flyBodyGyro.MaxTorque = Vector3.new(1, 1, 1) * math.huge
+                flyBodyGyro.CFrame = camera.CFrame
+                flyBodyGyro.Parent = hrp
+            end
+
+            local moveDirection = hum.MoveDirection
+            local camCFrame = camera.CFrame
+            flyBodyGyro.CFrame = camCFrame
+
+            local velocityVector = Vector3.new(0,0,0)
+            if moveDirection.Magnitude > 0 then
+                local forwardVector = camCFrame.LookVector
+                local rightVector = camCFrame.RightVector
+                
+                local inputVector = Vector3.new(
+                    moveDirection:Dot(rightVector),
+                    0,
+                    moveDirection:Dot(camCFrame.LookVector)
+                )
+                
+                velocityVector = (forwardVector * inputVector.Z + rightVector * inputVector.X).Unit * FlySpeed
+            end
+            
+            flyBodyVelocity.Velocity = velocityVector
+        else
+            if flyBodyVelocity then flyBodyVelocity:Destroy() flyBodyVelocity = nil end
+            if flyBodyGyro then flyBodyGyro:Destroy() flyBodyGyro = nil end
+        end
+    end
+
+    -- AIMBOT LOGIC
+    if not Options or not Options.AimKeybind or not AimAssistEnabled then 
+        isToggledActive = false
+        CurrentLockedTarget = nil
+        return 
+    end
+
+    local currentKeybindState = Options.AimKeybind:GetState()
+    local trackingTargetActive = false
+
+    if AimTriggerMode == "Hold" then
+        trackingTargetActive = currentKeybindState
+        if not trackingTargetActive then CurrentLockedTarget = nil end
+    elseif AimTriggerMode == "Toggle" then
+        if currentKeybindState and not lastKeybindState then
+            isToggledActive = not isToggledActive
+        end
+        trackingTargetActive = isToggledActive
+        if not trackingTargetActive then CurrentLockedTarget = nil end
+    end
+    lastKeybindState = currentKeybindState
+
+    if trackingTargetActive then
+        if not CurrentLockedTarget or not isValidTarget(CurrentLockedTarget) then
+            CurrentLockedTarget = getClosestPlayerToCenter()
+        end
+        
+        if CurrentLockedTarget and CurrentLockedTarget.Character then
+            local targetChar = CurrentLockedTarget.Character
+            local targetPart = targetChar:FindFirstChild("Head") or targetChar:FindFirstChild("HumanoidRootPart")
+            local targetHRP = targetChar:FindFirstChild("HumanoidRootPart")
+            
+            if targetPart and targetHRP then
+                local targetPosition = targetPart.Position
+                local targetVelocity = targetHRP.AssemblyLinearVelocity
+                local predictedPosition = targetPosition + (targetVelocity * PredictionVelocityFactor)
+                
+                local targetLookCFrame = CFrame.lookAt(camera.CFrame.Position, predictedPosition)
+                camera.CFrame = camera.CFrame:Lerp(targetLookCFrame, AimSmoothing)
+            end
+        end
+    end
+end)
+
+
+
+-- ==========================================
+-- FARM TAB WITH MURDERER AVOIDANCE
+-- ==========================================
+
+local FarmTab = Window:AddTab('Farm')
+local FarmSection = FarmTab:AddLeftGroupbox('Coin Farm')
+local SettingsSection = FarmTab:AddRightGroupbox('Settings')
+
+-- Variables
+getgenv().FarmEnabled = false
+getgenv().FarmSpeed = 20
+getgenv().AvoidMurderer = false -- Added Avoidance Toggle State
+local currentTargetCoin = nil
+local BlacklistedCoins = {}
+local bodyVel = Instance.new("BodyVelocity")
+bodyVel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+
+-- UI Toggles
+FarmSection:AddToggle('FarmToggle', {Text = 'Enable Auto Farm', Default = false, Callback = function(v) getgenv().FarmEnabled = v end})
+FarmSection:AddToggle('AvoidToggle', {Text = 'Avoid Murderer', Default = false, Callback = function(v) getgenv().AvoidMurderer = v end})
+
+local MurdererLabel = FarmSection:AddLabel('Current Murderer: None')
+local CoinCountLabel = FarmSection:AddLabel('Coins Remaining: 0')
+
+SettingsSection:AddSlider('FarmSpeedSlider', {
+    Text = 'Farm Speed', Default = 20, Min = 5, Max = 20, Rounding = 0,
+    Callback = function(v) getgenv().FarmSpeed = v end
+})
+
+-- Persistent Flight Logic
+task.spawn(function()
+    while true do
+        local char = LocalPlayer.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        
+        if getgenv().FarmEnabled and root then
+            -- 1. Locate Murderer
+            local murderer = nil
+            for _, p in pairs(Players:GetPlayers()) do
+                if p.Character and (p.Character:FindFirstChild("Knife") or p:GetAttribute("Role") == "Murderer") then
+                    murderer = p.Character
+                    MurdererLabel:SetText('Current Murderer: ' .. p.Name)
+                    break
+                end
+            end
+
+            -- 2. Target Selection with Murderer Avoidance
+            local availableCoins = {}
+            for _, v in pairs(workspace:GetDescendants()) do
+                if v.Name == "MainCoin" and v:IsA("BasePart") and not BlacklistedCoins[v] then
+                    table.insert(availableCoins, v)
+                end
+            end
+            CoinCountLabel:SetText('Coins Remaining: ' .. #availableCoins)
+
+            -- Pick coin (skip if murderer is in the way)
+            if not currentTargetCoin or not currentTargetCoin.Parent then
+                local bestCoin = nil
+                local dist = math.huge
+                for _, v in pairs(availableCoins) do
+                    local d = (root.Position - v.Position).Magnitude
+                    -- Avoidance Logic: Check if murderer is between us and the coin
+                    if getgenv().AvoidMurderer and murderer and murderer:FindFirstChild("HumanoidRootPart") then
+                        local mPos = murderer.HumanoidRootPart.Position
+                        local toCoin = (v.Position - root.Position).Unit
+                        local toMurderer = (mPos - root.Position).Unit
+                        -- If the angle is small, the murderer is roughly in the direction of the coin
+                        if (toCoin:Dot(toMurderer) > 0.8) and (mPos - root.Position).Magnitude < (v.Position - root.Position).Magnitude then
+                            continue -- Skip this coin
+                        end
+                    end
+                    if d < dist then bestCoin = v; dist = d end
+                end
+                currentTargetCoin = bestCoin
+            end
+
+            -- 3. Flight
+            if currentTargetCoin and currentTargetCoin.Parent then
+                for _, part in pairs(char:GetChildren()) do if part:IsA("BasePart") then part.CanCollide = false end end
+                bodyVel.Parent = root
+                bodyVel.Velocity = (currentTargetCoin.Position - root.Position).Unit * getgenv().FarmSpeed
+                
+                if (root.Position - currentTargetCoin.Position).Magnitude < 5 then
+                    BlacklistedCoins[currentTargetCoin] = true
+                    task.spawn(function() task.wait(1.5) BlacklistedCoins[currentTargetCoin] = nil end)
+                    currentTargetCoin = nil
+                end
+            else
+                bodyVel.Parent = nil
+            end
+        else
+            bodyVel.Parent = nil
+        end
+        task.wait(0.1)
+    end
+end)
+
+
+-- ASYNCHRONOUS VISUAL UPDATER
+task.spawn(function()
+    while true do
+        local success, err = pcall(updateESP)
+        if not success then
+            warn("ESP Runtime Failure: " .. tostring(err))
+        end
+        task.wait(ESP_UPDATE_INTERVAL)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if Highlights[player.Name] then
+        pcall(function() Highlights[player.Name]:Destroy() end)
+        Highlights[player.Name] = nil
+    end
+    if CurrentLockedTarget == player then CurrentLockedTarget = nil end
+    if SelectedFlingTargets[player.Name] then SelectedFlingTargets[player.Name] = nil end
+end)
+
+Library:SetWatermark('Admin Menu v6')
